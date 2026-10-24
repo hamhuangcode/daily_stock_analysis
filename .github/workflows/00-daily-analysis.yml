@@ -1,9 +1,9 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+  - cron: '30 0 * * 1-5'
   
   # 手动触发
   workflow_dispatch:
@@ -287,6 +287,7 @@ jobs:
           LLM_OLLAMA_ENABLED: ${{ vars.LLM_OLLAMA_ENABLED || secrets.LLM_OLLAMA_ENABLED }}
           LLM_OLLAMA_EXTRA_HEADERS: ${{ vars.LLM_OLLAMA_EXTRA_HEADERS || secrets.LLM_OLLAMA_EXTRA_HEADERS }}
 
+          MERGE_EMAIL_NOTIFICATION: 'true'
           # ==========================================
           # 数据源
           # ==========================================
