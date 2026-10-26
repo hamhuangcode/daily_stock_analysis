@@ -1,98 +1,76 @@
-import re
 from pathlib import Path
+from opencc import OpenCC
 
-# 1. 將 templates 與 src 內所有固定簡體模板與提示詞轉為台灣繁體中文
-try:
-    from opencc import OpenCC
-    cc = OpenCC('s2twp')
-    for folder in ['src', 'templates']:
-        p = Path(folder)
-        if p.exists():
-            for file_path in p.rglob('*'):
-                if file_path.suffix in ('.py', '.j2', '.md', '.txt', '.json'):
-                    try:
-                        text = file_path.read_text(encoding='utf-8')
-                        file_path.write_text(cc.convert(text), encoding='utf-8')
-                    except Exception:
-                        pass
-    print("✅ 已將所有系統模板與 AI 提示詞轉為台灣繁體中文！")
-except Exception as e:
-    print(f"⚠️ 繁體轉換跳過: {e}")
+cc = OpenCC('s2twp')
 
-# 2. 在 main.py 注入執行期攔截器：確保所有寄出的 Email 與 LINE 訊息強制轉繁體，且 LINE 自動分段發送（突破 5000 字限制）
-main_file = Path('main.py')
-if main_file.exists():
-    original_code = main_file.read_text(encoding='utf-8')
-    hook_code = """import os, json, urllib.request
+# 1. 將專案裡所有模板與 AI 提示詞轉為台灣繁體中文
+for folder in ['src', 'templates', 'bot', 'data_provider']:
+    p = Path(folder)
+    if p.exists():
+        for file_path in p.rglob('*'):
+            if file_path.suffix in ('.py', '.j2', '.md', '.txt', '.json', '.html'):
+                try:
+                    text = file_path.read_text(encoding='utf-8')
+                    text = text.replace('请使用中文', '請務必使用台灣繁體中文(Traditional Chinese)')
+                    text = text.replace('用中文', '用台灣繁體中文')
+                    text = cc.convert(text)
+                    file_path.write_text(text, encoding='utf-8')
+                except Exception as e:
+                    print(f"跳過檔案 {file_path}: {e}")
+
+print("✅ 第一步：已將所有系統模板與 AI 提示詞轉為台灣繁體中文！")
+
+# 2. 建立 sitecustomize.py（Python 啟動時會自動執行，完全不需修改 main.py！）
+sitecustomize_code = """# === 自動載入：強制台灣繁體中文 Email 攔截器 ===
 try:
     from opencc import OpenCC
     _cc = OpenCC('s2twp')
-except Exception:
-    _cc = None
 
-# 自動攔截並將所有外發 Email 轉為繁體中文
-import smtplib
-_orig_sendmail = smtplib.SMTP.sendmail
-def _tw_sendmail(self, from_addr, to_addrs, msg, *args, **kwargs):
-    if _cc:
-        if isinstance(msg, bytes):
-            try:
-                msg = _cc.convert(msg.decode('utf-8')).encode('utf-8')
-            except Exception:
-                pass
-        elif isinstance(msg, str):
-            msg = _cc.convert(msg)
-    return _orig_sendmail(self, from_addr, to_addrs, msg, *args, **kwargs)
-smtplib.SMTP.sendmail = _tw_sendmail
+    # 攔截 1：在 MIMEText 把文字壓成 Base64 之前，先把所有 Email 內文轉為繁體中文
+    import email.mime.text
+    _orig_mimetext_init = email.mime.text.MIMEText.__init__
+    def _tw_mimetext_init(self, _text, _subtype='plain', _charset=None, *, policy=None):
+        if isinstance(_text, str):
+            _text = _cc.convert(_text)
+        _orig_mimetext_init(self, _text, _subtype, _charset, policy=policy)
+    email.mime.text.MIMEText.__init__ = _tw_mimetext_init
 
-# 自動攔截發往 LINE 的請求：轉為繁體中文並自動以 4000 字分段推播
-import requests
-_orig_post = requests.Session.post
-def _tw_line_post(self, url, *args, **kwargs):
-    if 'api.line.me/v2/bot/message/push' in str(url):
-        data = kwargs.get('data')
-        json_payload = kwargs.get('json')
-        payload = None
-        if json_payload is not None:
-            payload = json_payload
-        elif data is not None:
-            try:
-                payload = json.loads(data.decode('utf-8') if isinstance(data, bytes) else data)
-            except Exception:
-                pass
-        if isinstance(payload, dict) and 'messages' in payload:
-            new_msgs = []
-            for m in payload['messages']:
-                if m.get('type') == 'text' and m.get('text'):
-                    txt = _cc.convert(m['text']) if _cc else m['text']
-                    # 按段落切分，確保每則不超過 4000 字元
-                    chunks = []
-                    current = ""
-                    for line in txt.splitlines(True):
-                        if len(current) + len(line) > 4000:
-                            chunks.append(current)
-                            current = line
-                        else:
-                            current += line
-                    if current:
-                        chunks.append(current)
-                    for c in chunks:
-                        new_msgs.append({'type': 'text', 'text': c.strip()})
-                else:
-                    new_msgs.append(m)
-            # LINE 單次 API 最多帶 5 個氣泡，若超過 5 個氣泡則分批呼叫
-            resp = None
-            for i in range(0, max(1, len(new_msgs)), 5):
-                batch_payload = {'to': payload.get('to'), 'messages': new_msgs[i:i+5]}
-                if 'json' in kwargs:
-                    kwargs['json'] = batch_payload
-                else:
-                    kwargs['data'] = json.dumps(batch_payload, ensure_ascii=False).encode('utf-8')
-                resp = _orig_post(self, url, *args, **kwargs)
-                print(f"[LINE Push] Batch {i//5 + 1} status: {resp.status_code}, response: {resp.text}")
-            return resp
-    return _orig_post(self, url, *args, **kwargs)
-requests.Session.post = _tw_line_post
+    # 攔截 2：在 Header 編碼 Email 標題與寄件人名稱之前，先轉為繁體中文
+    import email.header
+    _orig_header_init = email.header.Header.__init__
+    def _tw_header_init(self, s=None, charset=None, maxlinelen=None, header_name=None, continuation_ws=' ', errors='strict'):
+        if isinstance(s, str):
+            s = _cc.convert(s)
+        _orig_header_init(self, s, charset, maxlinelen, header_name, continuation_ws, errors)
+    email.header.Header.__init__ = _tw_header_init
+
+    # 攔截 3：若直接設定 msg['Subject'] = '...'，也自動轉為繁體中文
+    import email.message
+    _orig_setitem = email.message.Message.__setitem__
+    def _tw_setitem(self, name, val):
+        if isinstance(val, str):
+            val = _cc.convert(val)
+        _orig_setitem(self, name, val)
+    email.message.Message.__setitem__ = _tw_setitem
+
+    print("✅ 執行期 Email (MIMEText / Subject) 繁體中文攔截器已自動啟動！")
+except Exception as _e:
+    print(f"⚠️ 繁體攔截器啟動失敗: {_e}")
 """
-    main_file.write_text(hook_code + "\n" + original_code, encoding='utf-8')
-    print("✅ 已啟用 Email 繁體化與 LINE 自動分段推播功能！")
+
+# 寫入到當前目錄的 sitecustomize.py，並確保 PYTHONPATH 包含當前目錄
+Path('sitecustomize.py').write_text(sitecustomize_code, encoding='utf-8')
+
+# 若 main.py 需要插入，則安全地插在 from __future__ 之後作為雙重保障
+main_file = Path('main.py')
+if main_file.exists():
+    original_code = main_file.read_text(encoding='utf-8')
+    lines = original_code.splitlines(True)
+    insert_idx = 0
+    for i, line in enumerate(lines):
+        if line.strip().startswith('from __future__'):
+            insert_idx = i + 1
+    lines.insert(insert_idx, "import sitecustomize\n")
+    main_file.write_text("".join(lines), encoding='utf-8')
+
+print("✅ 第二步：已安全掛載繁體中文 Email 攔截器（保留 __future__ 在第一行）！")
