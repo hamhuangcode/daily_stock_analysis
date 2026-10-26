@@ -555,6 +555,7 @@ jobs:
           # 执行分析
           pip install opencc-python-reimplemented
           python patch_tw_line.py
+          export PYTHONPATH=".:${PYTHONPATH:-}"
           if [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "stocks-only" ]; then
